@@ -133,8 +133,13 @@ class RMGuidance:
         # VAE expects [N, H, W, 3] on the right device
         with torch.no_grad():
             ref_latents = vae.encode(reference_images[:, :, :, :3])
-        # ref_latents: [N, C, H, W]
+
+        # Handle dict output from some VAE implementations
+        if isinstance(ref_latents, dict):
+            ref_latents = ref_latents.get("samples", list(ref_latents.values())[0])
+
         ref_latents = ref_latents.to(device).float()
+        print(f"[RMG] ref_latents shape: {ref_latents.shape}, x_t will be logged on first step")
 
         # ---- 2. Build wrapper function -----------------------------------
         m = model.clone()
@@ -192,11 +197,19 @@ class RMGuidance:
             # Move references to same device/dtype as x_t
             refs = ref_latents.to(dtype=x_t.dtype, device=x_t.device)
 
-            # Resize reference latents to match x_t spatial dims if needed
+            # Log shapes on first step for debugging
+            if t_scalar > 0.98:
+                print(f"[RMG] x_t shape: {x_t.shape}, refs shape: {refs.shape}")
+
+            # Resize reference latents to match x_t spatial dims if needed.
+            # F.interpolate requires 4D input [N, C, H, W] — handle 3D case.
             if refs.shape[-2:] != x_t.shape[-2:]:
-                refs = F.interpolate(
-                    refs, size=x_t.shape[-2:], mode='bilinear', align_corners=False
-                )
+                need_squeeze = refs.dim() == 3
+                if need_squeeze:
+                    refs = refs.unsqueeze(1)   # [N, H, W] -> [N, 1, H, W]
+                refs = F.interpolate(refs, size=x_t.shape[-2:], mode='bilinear', align_corners=False)
+                if need_squeeze:
+                    refs = refs.squeeze(1)     # [N, 1, H, W] -> [N, H, W]
 
             mu_ref = compute_reference_mean(refs, x_t, t_scalar)   # [B, C, H, W]
 
